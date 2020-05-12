@@ -12,9 +12,17 @@
 #include <asm/uaccess.h>
 #include <linux/delay.h>
 #include <linux/cdev.h>	
+#include <linux/sched.h>	
+#include <asm/pgtable.h>
 
 #include "ioctl_dev.h"
 #include "ioctl.h"
+
+#define BUF_LEN 80
+
+static char Message[BUF_LEN];
+
+static char *Message_Ptr;
 
 /* store the major number extracted by dev_t */
 int ioctl_d_interface_major = 0;
@@ -22,6 +30,9 @@ int ioctl_d_interface_minor = 0;
 
 #define DEVICE_NAME "ioctl_d"
 char* ioctl_d_interface_name = DEVICE_NAME;
+
+static char *Message_Ptr;
+
 
 ioctl_d_interface_dev ioctl_d_interface;
 
@@ -40,6 +51,51 @@ static void ioctl_d_interface_dev_del(ioctl_d_interface_dev* ioctl_d_interface);
 static int ioctl_d_interface_setup_cdev(ioctl_d_interface_dev* ioctl_d_interface);
 static int ioctl_d_interface_init(void);
 static void ioctl_d_interface_exit(void);
+
+
+
+static struct page *walk_page_table(unsigned long addr)
+{
+    pgd_t *pgd;
+    pte_t *ptep, pte;
+    pud_t *pud;
+    pmd_t *pmd;
+    dma_addr_t phys_addr;
+
+    struct page *page = NULL;
+    struct mm_struct *mm = current->mm;
+
+    pgd = pgd_offset(mm, addr);
+    if (pgd_none(*pgd) || pgd_bad(*pgd))
+        goto out;
+    printk(KERN_NOTICE "Valid pgd");
+
+    pud = pud_offset(pgd, addr);
+    if (pud_none(*pud) || pud_bad(*pud))
+        goto out;
+    printk(KERN_NOTICE "Valid pud");
+
+    pmd = pmd_offset(pud, addr);
+    if (pmd_none(*pmd) || pmd_bad(*pmd))
+        goto out;
+    printk(KERN_NOTICE "Valid pmd");
+
+    ptep = pte_offset_map(pmd, addr);
+    if (!ptep)
+        goto out;
+    pte = *ptep;
+
+    page = pte_page(pte);
+    if (page)
+        printk(KERN_INFO "page frame struct is @ %p", page);
+        phys_addr = page_to_phys(page);
+        printk(KERN_INFO "physical addr is @ %p", phys_addr);
+
+ out:
+    return page;
+}
+
+
 
 static int ioctl_d_interface_dev_init(ioctl_d_interface_dev * ioctl_d_interface)
 {
@@ -124,8 +180,31 @@ int ioctl_d_interface_open(struct inode *inode, struct file *filp)
 		return -EBUSY;		/* already open */
 	}
 
+        Message_Ptr = Message;	
+
 	return 0;
 }
+
+int ioctl_d_interface_read(struct file *filp, char *buffer, size_t length, loff_t *offset)
+{
+int bytes_read = 0;
+
+
+  printk("ioctl_d_interface_read called \n");
+if(*Message_Ptr == 0)
+  return 0;
+
+while(length && *Message_Ptr){
+   put_user(*(Message_Ptr++), buffer++);
+   length--;
+   bytes_read++;
+   }
+
+   printk("Read %d bytes, %d left \n",bytes_read, length);
+   return bytes_read;
+}
+
+
 
 int ioctl_d_interface_release(struct inode *inode, struct file *filp)
 {
@@ -140,12 +219,15 @@ long ioctl_d_interface_ioctl(struct file *filp, unsigned int cmd, unsigned long 
 		// Get the number of channel found
 		case IOCTL_BASE_GET_MUIR:
 			printk(KERN_INFO "<%s> ioctl: IOCTL_BASE_GET_MUIR\n", DEVICE_NAME);
-			uint32_t value = 0x12345678;
+			uint32_t value = 0xdeadbeaf;
 			if (copy_to_user((uint32_t*) arg, &value, sizeof(value))){
 				return -EFAULT;
 			}
 			break;
 
+		case IOCTL_BASE_PAGE_TABLE:
+                       printk(KERN_INFO "<> ioctl: IOCTL_PAGE_TABLE\n");
+		       struct page *page = walk_page_table(arg);
 		default:
 			break;
 	}
